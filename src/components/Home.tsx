@@ -20,7 +20,7 @@ export function Home({ games, onSelect }: Props) {
             <span style={styles.tagline}>{g.tagline}</span>
             <span style={styles.players}>
               {g.minPlayers === g.maxPlayers ? `${g.minPlayers}` : `${g.minPlayers}–${g.maxPlayers}`} jogadores
-              {g.duration > 0 ? ` · ${g.duration}s` : ' · survival'}
+              {g.zen ? ' · experiência' : g.duration > 0 ? ` · ${g.duration}s` : ' · survival'}
             </span>
           </button>
         ))}

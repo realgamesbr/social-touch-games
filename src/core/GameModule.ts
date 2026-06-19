@@ -10,6 +10,7 @@ export interface GameMeta {
   maxPlayers: number
   duration: number // 0 = endless/survival
   color: string   // accent color for card
+  zen?: boolean   // experiência sem HUD/score/overlays; auto-start, dona da tela inteira
 }
 
 export interface GameModule {

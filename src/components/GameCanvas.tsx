@@ -9,6 +9,7 @@ interface Props {
 }
 
 export function GameCanvas({ game, onBack }: Props) {
+  const zen = !!game.meta.zen
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const [state, setState] = useState<'idle' | 'playing' | 'gameover'>('idle')
   const [score, setScore] = useState(0)
@@ -36,6 +37,9 @@ export function GameCanvas({ game, onBack }: Props) {
     })
 
     game.init(canvas, touch, session)
+
+    // Experiência zen: sem tela de "COMEÇAR" — o módulo dona a superfície e auto-inicia.
+    if (zen) session.start()
 
     const loop = (now: number) => {
       const dt = Math.min((now - lastRef.current) / 1000, 0.1)
@@ -65,6 +69,16 @@ export function GameCanvas({ game, onBack }: Props) {
   }
 
   const remaining = game.meta.duration > 0 ? Math.max(0, game.meta.duration - elapsed) : null
+
+  // Zen: superfície limpa, sem HUD/overlays. Só uma saída discreta (não prender o usuário).
+  if (zen) {
+    return (
+      <div style={styles.root}>
+        <canvas ref={canvasRef} style={styles.canvas} />
+        <button style={styles.zenExit} onClick={onBack} aria-label="sair">✕</button>
+      </div>
+    )
+  }
 
   return (
     <div style={styles.root}>
@@ -148,6 +162,21 @@ const styles: Record<string, React.CSSProperties> = {
     flex: 1,
     width: '100%',
     touchAction: 'none',
+  },
+  zenExit: {
+    position: 'absolute',
+    top: '10px',
+    left: '12px',
+    width: '34px',
+    height: '34px',
+    borderRadius: '50%',
+    border: 'none',
+    background: 'transparent',
+    color: '#fff',
+    opacity: 0.15,
+    fontSize: '1rem',
+    cursor: 'pointer',
+    zIndex: 10,
   },
   overlay: {
     position: 'absolute',

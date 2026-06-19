@@ -1,6 +1,8 @@
 import type { TouchPoint } from './TouchManager'
 
-export const COLORS = ['#ff4444', '#00e676', '#ffab40', '#aa55ff', '#00e5ff', '#ff44ff']
+// Índices 0–5 usados pelos jogos com até 6 players; 6–7 só pela Sinergia (8 players).
+// Estender é backward-safe: os demais jogos nunca passam de COLORS[5].
+export const COLORS = ['#ff4444', '#00e676', '#ffab40', '#aa55ff', '#00e5ff', '#ff44ff', '#ffd740', '#448aff']
 export const CHECKIN_DURATION = 10
 
 export interface CheckinPlayer {
@@ -161,4 +163,35 @@ export function drawGrid(ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElemen
   for (let y = 0; y < canvas.height; y += 40) {
     ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(canvas.width, y); ctx.stroke()
   }
+}
+
+// Geometria paramétrica de segmentos (mesma matemática do untangle de Raios).
+// Genérica para reuso — Raios mantém suas versões privadas; Sinergia usa estas.
+export function segmentsIntersect(
+  ax: number, ay: number, bx: number, by: number,
+  cx: number, cy: number, dx: number, dy: number
+): boolean {
+  const d1x = bx - ax, d1y = by - ay
+  const d2x = dx - cx, d2y = dy - cy
+  const cross = d1x * d2y - d1y * d2x
+  if (Math.abs(cross) < 1e-10) return false
+  const t = ((cx - ax) * d2y - (cy - ay) * d2x) / cross
+  const u = ((cx - ax) * d1y - (cy - ay) * d1x) / cross
+  return t > 0.02 && t < 0.98 && u > 0.02 && u < 0.98
+}
+
+export function segmentIntersectionPoint(
+  ax: number, ay: number, bx: number, by: number,
+  cx: number, cy: number, dx: number, dy: number
+): { x: number; y: number } | null {
+  const d1x = bx - ax, d1y = by - ay
+  const d2x = dx - cx, d2y = dy - cy
+  const cross = d1x * d2y - d1y * d2x
+  if (Math.abs(cross) < 1e-10) return null
+  const t = ((cx - ax) * d2y - (cy - ay) * d2x) / cross
+  const u = ((cx - ax) * d1y - (cy - ay) * d1x) / cross
+  if (t > 0.02 && t < 0.98 && u > 0.02 && u < 0.98) {
+    return { x: ax + t * d1x, y: ay + t * d1y }
+  }
+  return null
 }

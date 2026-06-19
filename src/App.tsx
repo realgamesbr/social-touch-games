@@ -13,8 +13,10 @@ import { fantasmaGame } from './games/fantasma'
 import { correnteGame } from './games/corrente'
 import { labirintoGame } from './games/labirinto'
 import { followLineGame } from './games/followline'
+import { sinergiaGame } from './games/sinergia'
 
 const ALL_GAMES: GameModule[] = [
+  sinergiaGame,
   raiosGame,
   vazamentoGame,
   pulsoGame,
