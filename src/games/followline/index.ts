@@ -4,6 +4,7 @@ import { SessionManager } from '../../core/SessionManager'
 import type { GameModule, GameMeta } from '../../core/GameModule'
 import { COLORS, updateCheckin, drawPlayerHalo, drawCheckinHUD, drawEndScreen } from '../../core/helpers'
 import type { CheckinPlayer } from '../../core/helpers'
+import { drawBackground } from '../../core/background'
 
 const META: GameMeta = {
   id: 'followline',
@@ -69,8 +70,7 @@ export class FollowLineGame implements GameModule {
   update(dt: number) {
     this.phaseElapsed += dt
     const { ctx, canvas } = this
-    ctx.fillStyle = '#0d0d0d'
-    ctx.fillRect(0, 0, canvas.width, canvas.height)
+    drawBackground(ctx, canvas, this.meta.color)
     const points = this.touch.getPoints()
     switch (this.phase) {
       case 'checkin': this.runCheckin(points); break

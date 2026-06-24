@@ -2,6 +2,7 @@ import { TouchManager } from '../../core/TouchManager'
 import type { TouchPoint } from '../../core/TouchManager'
 import { SessionManager } from '../../core/SessionManager'
 import type { GameModule, GameMeta } from '../../core/GameModule'
+import { drawBackground } from '../../core/background'
 
 const META: GameMeta = {
   id: 'vazamento',
@@ -90,8 +91,7 @@ export class VazamentoGame implements GameModule {
 
   update(dt: number) {
     this.phaseElapsed += dt
-    this.ctx.fillStyle = '#0a1628'
-    this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height)
+    drawBackground(this.ctx, this.canvas, this.meta.color)
     const points = this.touch.getPoints()
 
     switch (this.phase) {
@@ -248,7 +248,6 @@ export class VazamentoGame implements GameModule {
       this.scoreAccum -= whole
     }
 
-    this.drawFloor()
     for (const hole of this.holes) this.drawHole(hole)
     this.drawHazards()
     this.drawIdleTouches(points, pluggedPointerIds)
@@ -305,22 +304,6 @@ export class VazamentoGame implements GameModule {
   }
 
   // ─── DESENHO ────────────────────────────────────────────────────
-  private drawFloor() {
-    const { ctx, canvas } = this
-    // Padrão de "chão" da mesa visto de cima
-    ctx.fillStyle = '#1e3a5f'
-    ctx.fillRect(0, 0, canvas.width, canvas.height)
-    // textura sutil
-    ctx.strokeStyle = 'rgba(255,255,255,0.025)'
-    ctx.lineWidth = 1
-    for (let x = 0; x < canvas.width; x += 40) {
-      ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, canvas.height); ctx.stroke()
-    }
-    for (let y = 0; y < canvas.height; y += 40) {
-      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(canvas.width, y); ctx.stroke()
-    }
-  }
-
   private drawWaterFromEdges() {
     if (this.waterLevel <= 0) return
     const { ctx, canvas } = this
