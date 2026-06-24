@@ -47,6 +47,12 @@ export class CorrenteGame implements GameModule {
   private failReason = ''
   private poleA = { x: 0, y: 0 }
   private poleB = { x: 0, y: 0 }
+  // Transição animada entre orientações ao subir de fase
+  private poleFromA = { x: 0, y: 0 }
+  private poleFromB = { x: 0, y: 0 }
+  private poleToA = { x: 0, y: 0 }
+  private poleToB = { x: 0, y: 0 }
+  private poleTrans = 1     // 0..1, 1 = posição final atingida
   private level = 1
   private phaseProgress = 0   // segundos conectados na fase atual
   private levelFlash = 0
@@ -87,8 +93,51 @@ export class CorrenteGame implements GameModule {
   private resize = () => {
     this.canvas.width = this.canvas.offsetWidth
     this.canvas.height = this.canvas.offsetHeight
-    this.poleA = { x: 60, y: this.canvas.height / 2 }
-    this.poleB = { x: this.canvas.width - 60, y: this.canvas.height / 2 }
+    // Em checkin os pólos ficam horizontais (orientação previsível pra todos
+    // posicionarem ao redor da mesa). No jogo cada fase muda a orientação.
+    if (this.phase === 'checkin') {
+      this.poleA = { x: 60, y: this.canvas.height / 2 }
+      this.poleB = { x: this.canvas.width - 60, y: this.canvas.height / 2 }
+    }
+  }
+
+  // Sorteia novas posições pros pólos em bordas opostas. A cada fase muda a
+  // orientação — força o grupo a se reorganizar fisicamente ao redor da mesa.
+  // animate=true faz transição suave; false teleporta (início do jogo).
+  private shufflePoles(animate: boolean) {
+    const w = this.canvas.width, h = this.canvas.height
+    const m = 60
+    const orientations: Array<[{ x: number; y: number }, { x: number; y: number }]> = [
+      [{ x: m, y: h / 2 }, { x: w - m, y: h / 2 }],               // horizontal
+      [{ x: w / 2, y: m }, { x: w / 2, y: h - m }],               // vertical
+      [{ x: m, y: h - m }, { x: w - m, y: m }],                   // diagonal /
+      [{ x: m, y: m }, { x: w - m, y: h - m }],                   // diagonal \
+      [{ x: m, y: h * 0.3 }, { x: w - m, y: h * 0.7 }],
+      [{ x: m, y: h * 0.7 }, { x: w - m, y: h * 0.3 }],
+    ]
+    // Evita repetir a mesma orientação por acaso
+    let pick = orientations[Math.floor(Math.random() * orientations.length)]
+    for (let i = 0; i < 5; i++) {
+      const sameA = pick[0].x === this.poleA.x && pick[0].y === this.poleA.y
+      const sameB = pick[1].x === this.poleB.x && pick[1].y === this.poleB.y
+      if (!sameA || !sameB) break
+      pick = orientations[Math.floor(Math.random() * orientations.length)]
+    }
+    if (animate) {
+      this.poleFromA = { ...this.poleA }
+      this.poleFromB = { ...this.poleB }
+      this.poleToA = pick[0]
+      this.poleToB = pick[1]
+      this.poleTrans = 0
+    } else {
+      this.poleA = pick[0]
+      this.poleB = pick[1]
+      this.poleFromA = { ...this.poleA }
+      this.poleFromB = { ...this.poleB }
+      this.poleToA = { ...this.poleA }
+      this.poleToB = { ...this.poleB }
+      this.poleTrans = 1
+    }
   }
 
   private runCheckin(points: Map<number, TouchPoint>) {
@@ -115,6 +164,7 @@ export class CorrenteGame implements GameModule {
     this.levelFlash = 0
     this.won = false
     this.obstacles = []
+    this.shufflePoles(false)
     this.spawnObstacles()
   }
 
@@ -122,9 +172,19 @@ export class CorrenteGame implements GameModule {
   // jogadores — garante que 2+ pessoas sempre consigam fechar a corrente,
   // mas ainda exige formar uma linha razoavelmente esticada.
   private linkMax(): number {
-    const span = this.poleB.x - this.poleA.x
+    const span = Math.hypot(this.poleB.x - this.poleA.x, this.poleB.y - this.poleA.y)
     const gaps = this.players.length + 1
     return Math.max(200, (span / gaps) * 1.35)
+  }
+
+  // Posição do toque projetada sobre o eixo poleA→poleB (0 = poleA, 1 = poleB).
+  // Permite ordenar a corrente independente da orientação dos pólos.
+  private poleProjection(x: number, y: number): number {
+    const dx = this.poleB.x - this.poleA.x
+    const dy = this.poleB.y - this.poleA.y
+    const len2 = dx * dx + dy * dy
+    if (len2 < 1) return 0
+    return ((x - this.poleA.x) * dx + (y - this.poleA.y) * dy) / len2
   }
 
   private addObstacle() {
@@ -157,6 +217,16 @@ export class CorrenteGame implements GameModule {
   private runPlaying(points: Map<number, TouchPoint>, dt: number) {
     this.gameElapsed += dt
     this.levelFlash = Math.max(0, this.levelFlash - dt * 1.5)
+
+    // Transição dos pólos: ~1.2s pra deslizar entre as orientações
+    if (this.poleTrans < 1) {
+      this.poleTrans = Math.min(1, this.poleTrans + dt / 1.2)
+      const e = 1 - Math.pow(1 - this.poleTrans, 3)  // easeOutCubic
+      this.poleA.x = this.poleFromA.x + (this.poleToA.x - this.poleFromA.x) * e
+      this.poleA.y = this.poleFromA.y + (this.poleToA.y - this.poleFromA.y) * e
+      this.poleB.x = this.poleFromB.x + (this.poleToB.x - this.poleFromB.x) * e
+      this.poleB.y = this.poleFromB.y + (this.poleToB.y - this.poleFromB.y) * e
+    }
 
     // Atualiza obstáculos
     for (const ob of this.obstacles) {
@@ -194,8 +264,8 @@ export class CorrenteGame implements GameModule {
       }
     }
 
-    // Ordena por X pra fazer a cadeia
-    activeTouches.sort((a, b) => a.x - b.x)
+    // Ordena pela projeção sobre o eixo A→B (funciona em qualquer orientação)
+    activeTouches.sort((a, b) => this.poleProjection(a.x, a.y) - this.poleProjection(b.x, b.y))
 
     // Verifica se a cadeia conecta os pólos
     const linkMax = this.linkMax()
@@ -227,7 +297,8 @@ export class CorrenteGame implements GameModule {
           this.session.end()
           return
         }
-        this.addObstacle()   // cada fase sobe a dificuldade
+        this.addObstacle()       // cada fase sobe a dificuldade
+        this.shufflePoles(true)  // e os pólos viajam suavemente pra nova orientação
       }
     }
 

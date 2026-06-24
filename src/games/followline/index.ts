@@ -20,6 +20,8 @@ const META: GameMeta = {
 const LEVEL_TIMEOUT = 30
 const COLLISION_DIST = 50
 const PATH_TOLERANCE = 65
+const LIFT_GRACE = 3.0     // segundos sem o dedo antes de falhar
+const RECLAIM_RADIUS = 90  // distância do progresso atual pra um pointer novo poder retomar a linha
 
 type Phase = 'checkin' | 'ready' | 'playing' | 'won' | 'failed'
 
@@ -35,6 +37,7 @@ interface Path {
   pointerId: number | null
   progress: number  // 0..poly.length-1 (índice do ponto mais avançado)
   finished: boolean
+  liftTime: number  // tempo sem dedo (cooldown antes do fail)
 }
 
 export class FollowLineGame implements GameModule {
@@ -167,6 +170,7 @@ export class FollowLineGame implements GameModule {
         pointerId: null,
         progress: 0,
         finished: false,
+        liftTime: 0,
       })
     }
   }
@@ -241,16 +245,47 @@ export class FollowLineGame implements GameModule {
       this.session.end()
       return
     }
+    // Reatribuição com cooldown: se um path está sem dedo ativo, tentar
+    // pegar um pointer novo (não usado por outro path) próximo do ponto atual
+    // de progresso. Falha só se ninguém retomar em LIFT_GRACE segundos.
+    const claimed = new Set<number>()
+    for (const p of this.paths) if (p.pointerId !== null) claimed.add(p.pointerId)
+    for (const path of this.paths) {
+      if (path.finished) continue
+      const active = path.pointerId !== null && points.get(path.pointerId)?.active
+      if (active) continue
+      const cur = path.poly[Math.min(path.progress, path.poly.length - 1)]
+      let bestId: number | null = null
+      let bestD = RECLAIM_RADIUS
+      for (const [id, pt] of points) {
+        if (!pt.active || claimed.has(id)) continue
+        const d = Math.hypot(pt.x - cur.x, pt.y - cur.y)
+        if (d < bestD) { bestD = d; bestId = id }
+      }
+      if (bestId !== null) {
+        path.pointerId = bestId
+        path.liftTime = 0
+        claimed.add(bestId)
+      } else {
+        path.pointerId = null
+      }
+    }
+
     // Atualiza progresso de cada path
     const activeTouches: { id: number; x: number; y: number }[] = []
     for (const path of this.paths) {
       if (path.finished) continue
       if (path.pointerId === null || !points.get(path.pointerId)?.active) {
-        this.failReason = 'Soltou o dedo no meio do caminho'
-        this.phase = 'failed'
-        this.session.end()
-        return
+        path.liftTime += dt
+        if (path.liftTime >= LIFT_GRACE) {
+          this.failReason = 'Demorou demais sem o dedo na linha'
+          this.phase = 'failed'
+          this.session.end()
+          return
+        }
+        continue
       }
+      path.liftTime = 0
       const pt = points.get(path.pointerId)!
       activeTouches.push({ id: path.pointerId, x: pt.x, y: pt.y })
       // Avança progresso enquanto está próximo da próxima posição do path
@@ -375,12 +410,33 @@ export class FollowLineGame implements GameModule {
   }
 
   private drawTouches(points: Map<number, TouchPoint>) {
+    const { ctx } = this
     for (const path of this.paths) {
       if (path.finished) continue
-      if (path.pointerId === null) continue
-      const pt = points.get(path.pointerId)
-      if (!pt?.active) continue
-      drawPlayerHalo(this.ctx, pt.x, pt.y, path.color, this.phaseElapsed, { pulsing: false, size: 0.85 })
+      const pt = path.pointerId !== null ? points.get(path.pointerId) : undefined
+      if (pt?.active) {
+        drawPlayerHalo(ctx, pt.x, pt.y, path.color, this.phaseElapsed, { pulsing: false, size: 0.85 })
+        continue
+      }
+      // Sem dedo: pulso no ponto onde foi solto, urgente, com timer visível
+      const cur = path.poly[Math.min(path.progress, path.poly.length - 1)]
+      const remaining = Math.max(0, LIFT_GRACE - path.liftTime)
+      const pulse = 18 + Math.sin(this.phaseElapsed * 10) * 8
+      ctx.beginPath()
+      ctx.arc(cur.x, cur.y, 30 + pulse, 0, Math.PI * 2)
+      ctx.strokeStyle = path.color
+      ctx.lineWidth = 4
+      ctx.setLineDash([5, 5])
+      ctx.shadowBlur = 24
+      ctx.shadowColor = '#ff4444'
+      ctx.stroke()
+      ctx.setLineDash([])
+      ctx.shadowBlur = 0
+      ctx.fillStyle = '#ff4444'
+      ctx.font = `bold ${Math.min(this.canvas.width * 0.05, 22)}px system-ui`
+      ctx.textAlign = 'center'
+      ctx.textBaseline = 'middle'
+      ctx.fillText(remaining.toFixed(1), cur.x, cur.y)
     }
   }
 

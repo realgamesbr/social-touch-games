@@ -628,7 +628,49 @@ export class SinergiaGame implements GameModule {
     ctx.globalCompositeOperation = 'source-over'
 
     this.drawTethers()
+    this.drawGatherSignal()
     this.drawIgniteSignal()
+  }
+
+  // Sinal luminoso no centro enquanto a roda se forma: surge no momento em
+  // que 4+ pessoas estão tocando seus pontos e cresce conforme o jogo se
+  // prepara pra começar. Diegético — sem instruções textuais permanentes.
+  private drawGatherSignal() {
+    if (this.phase !== 'gathering') return
+    const bondedNear = this.points.filter(p => p.near).length
+    if (bondedNear < MIN_PLAYERS) return
+    const { ctx, canvas } = this
+    const cx = canvas.width / 2, cy = canvas.height / 2
+    const progress = Math.min(1, this.igniteTimer / IGNITE_TIME)
+    const baseR = Math.min(canvas.width, canvas.height) * 0.08
+    const r = baseR + progress * baseR * 0.6 + Math.sin(this.time * 5) * 4
+    // halo externo respirante
+    ctx.beginPath()
+    ctx.arc(cx, cy, r * 2.4, 0, Math.PI * 2)
+    ctx.fillStyle = `rgba(200,170,255,${0.04 + 0.10 * progress})`
+    ctx.fill()
+    // arco de progresso (vai fechando)
+    ctx.beginPath()
+    ctx.arc(cx, cy, r, -Math.PI / 2, -Math.PI / 2 + progress * Math.PI * 2)
+    ctx.strokeStyle = `rgba(232,214,255,${0.5 + 0.5 * progress})`
+    ctx.lineWidth = 4
+    ctx.shadowBlur = 18 + progress * 22
+    ctx.shadowColor = '#aa55ff'
+    ctx.stroke()
+    ctx.shadowBlur = 0
+    // núcleo
+    ctx.beginPath()
+    ctx.arc(cx, cy, r * 0.35, 0, Math.PI * 2)
+    ctx.fillStyle = `rgba(232,214,255,${0.3 + 0.5 * progress})`
+    ctx.fill()
+    // texto sutil só perto do disparo
+    if (progress > 0.55) {
+      ctx.fillStyle = `rgba(232,214,255,${(progress - 0.55) / 0.45})`
+      ctx.font = `bold ${Math.min(canvas.width * 0.038, 18)}px system-ui`
+      ctx.textAlign = 'center'
+      ctx.textBaseline = 'middle'
+      ctx.fillText('✺ JÁ VEM', cx, cy + r + 28)
+    }
   }
 
   // Teia elástica entre o dedo e a bolinha quando ela se afasta — mostra

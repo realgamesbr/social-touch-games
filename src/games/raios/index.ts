@@ -20,6 +20,8 @@ const CHECKIN_DURATION = 5
 const SECOND_TOUCH_TIMEOUT = 20
 const STABLE_REQUIRED = 1.5
 const ANCHOR_RADIUS = 50
+const LIFT_GRACE = 3.0          // segundos sem dedo antes de falhar
+const RECLAIM_RADIUS = 110      // raio em volta da última posição pra retomar
 
 // Dificuldade por nível
 const levelTimeout = (level: number) => Math.max(20, 50 - level * 4)
@@ -36,6 +38,9 @@ interface NodeRef {
   y: number
   anchorX: number
   anchorY: number
+  liftTime: number     // tempo desde que perdeu o dedo (zero quando ativo)
+  lastX: number        // última posição com dedo, pra retomar perto
+  lastY: number
 }
 
 interface Player {
@@ -143,8 +148,8 @@ export class RaiosGame implements GameModule {
         this.players.push({
           index: idx,
           color,
-          a: { pointerId: id, color, x: pt.x, y: pt.y, anchorX: pt.x, anchorY: pt.y },
-          b: { pointerId: null, color, x: 0, y: 0, anchorX: 0, anchorY: 0 },
+          a: { pointerId: id, color, x: pt.x, y: pt.y, anchorX: pt.x, anchorY: pt.y, liftTime: 0, lastX: pt.x, lastY: pt.y },
+          b: { pointerId: null, color, x: 0, y: 0, anchorX: 0, anchorY: 0, liftTime: 0, lastX: 0, lastY: 0 },
         })
       }
     }
@@ -205,7 +210,49 @@ export class RaiosGame implements GameModule {
       p.b.anchorY = y
       p.b.x = x
       p.b.y = y
+      p.b.lastX = x
+      p.b.lastY = y
     }
+  }
+
+  // Reatribui pointerIds soltos pra pointers novos que apareceram perto da
+  // última posição do node. Retorna true se algum node estourou LIFT_GRACE.
+  private resolveNodes(points: Map<number, TouchPoint>, dt: number): boolean {
+    const claimed = new Set<number>()
+    const allNodes: NodeRef[] = []
+    for (const p of this.players) { allNodes.push(p.a, p.b) }
+    for (const node of allNodes) {
+      if (node.pointerId !== null && points.get(node.pointerId)?.active) claimed.add(node.pointerId)
+    }
+    for (const node of allNodes) {
+      const pt = node.pointerId !== null ? points.get(node.pointerId) : undefined
+      if (pt?.active) {
+        node.x = pt.x; node.y = pt.y
+        node.lastX = pt.x; node.lastY = pt.y
+        node.liftTime = 0
+        continue
+      }
+      let bestId: number | null = null
+      let bestD = RECLAIM_RADIUS
+      for (const [id, npt] of points) {
+        if (!npt.active || claimed.has(id)) continue
+        const d = Math.hypot(npt.x - node.lastX, npt.y - node.lastY)
+        if (d < bestD) { bestD = d; bestId = id }
+      }
+      if (bestId !== null) {
+        node.pointerId = bestId
+        const npt = points.get(bestId)!
+        node.x = npt.x; node.y = npt.y
+        node.lastX = npt.x; node.lastY = npt.y
+        node.liftTime = 0
+        claimed.add(bestId)
+      } else {
+        node.pointerId = null
+        node.liftTime += dt
+        if (node.liftTime >= LIFT_GRACE) return true
+      }
+    }
+    return false
   }
 
   private updateSecondTouch(points: Map<number, TouchPoint>) {
@@ -296,23 +343,10 @@ export class RaiosGame implements GameModule {
   }
 
   private updatePlaying(points: Map<number, TouchPoint>, dt: number) {
-    // Todos os 2N dedos precisam estar ativos
-    for (const p of this.players) {
-      if (p.a.pointerId === null || !points.get(p.a.pointerId)?.active) {
-        this.fail('Alguém soltou o dedo!')
-        return
-      }
-      if (p.b.pointerId === null || !points.get(p.b.pointerId)?.active) {
-        this.fail('Alguém soltou o dedo!')
-        return
-      }
-    }
-    // Sync positions
-    for (const p of this.players) {
-      const pa = points.get(p.a.pointerId!)
-      const pb = points.get(p.b.pointerId!)
-      if (pa) { p.a.x = pa.x; p.a.y = pa.y }
-      if (pb) { p.b.x = pb.x; p.b.y = pb.y }
+    // Resolve dedos soltos com cooldown — fail só após LIFT_GRACE sem retorno.
+    if (this.resolveNodes(points, dt)) {
+      this.fail('Soltaram um dedo por tempo demais')
+      return
     }
 
     this.levelElapsed += dt
@@ -514,6 +548,29 @@ export class RaiosGame implements GameModule {
   private drawNode(node: NodeRef, pulse: boolean, isAnchor: boolean) {
     const { ctx } = this
     const t = this.phaseElapsed
+
+    // Em cooldown? Desenha aviso vermelho com countdown no last point.
+    if (node.pointerId === null && node.liftTime > 0) {
+      const remaining = Math.max(0, LIFT_GRACE - node.liftTime)
+      const ringPulse = 14 + Math.sin(t * 10) * 6
+      ctx.beginPath()
+      ctx.arc(node.lastX, node.lastY, 30 + ringPulse, 0, Math.PI * 2)
+      ctx.strokeStyle = node.color
+      ctx.lineWidth = 4
+      ctx.setLineDash([6, 6])
+      ctx.shadowBlur = 24
+      ctx.shadowColor = '#ff4444'
+      ctx.stroke()
+      ctx.setLineDash([])
+      ctx.shadowBlur = 0
+      ctx.fillStyle = '#ff4444'
+      ctx.font = `bold ${Math.min(this.canvas.width * 0.05, 22)}px system-ui`
+      ctx.textAlign = 'center'
+      ctx.textBaseline = 'middle'
+      ctx.fillText(remaining.toFixed(1), node.lastX, node.lastY)
+      return
+    }
+
     const pulseR = pulse ? 6 + Math.sin(t * 6) * 6 : 0
     // Halo grande externo (visível mesmo com dedo em cima)
     ctx.beginPath()

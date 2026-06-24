@@ -2,9 +2,13 @@ import { TouchManager } from '../../core/TouchManager'
 import type { TouchPoint } from '../../core/TouchManager'
 import { SessionManager } from '../../core/SessionManager'
 import type { GameModule, GameMeta } from '../../core/GameModule'
-import { COLORS, updateCheckin, drawPlayerHalo, drawCheckinHUD, drawEndScreen } from '../../core/helpers'
+import { updateCheckin, drawPlayerHalo, drawCheckinHUD, drawEndScreen } from '../../core/helpers'
 import type { CheckinPlayer } from '../../core/helpers'
 import { drawBackground } from '../../core/background'
+
+// Cor única dos pontos da constelação — esqueceu o padrão de cores por player;
+// agora qualquer dedo toca qualquer ponto, como estrelas reais.
+const STAR_COLOR = '#fff8d4'
 
 const META: GameMeta = {
   id: 'constelacao',
@@ -24,7 +28,6 @@ const HIT_RADIUS = 60
 type Phase = 'checkin' | 'show' | 'answer' | 'round_end' | 'gameover'
 
 interface Target {
-  color: string
   x: number
   y: number
   hitBy: number | null
@@ -111,39 +114,66 @@ export class ConstelacaoGame implements GameModule {
   }
 
   private generateTargets() {
-    const n = this.players.length
+    // Cresce com a rodada: começa em N pontos (= nº de jogadores), e a partir
+    // da rodada 3 ganha +1 ponto a cada 2 rodadas. Não há limite duro;
+    // capamos em 14 pra não virar uma chuva de estrelas.
+    const extra = Math.max(0, Math.floor((this.round - 1) / 2))
+    const count = Math.min(14, this.players.length + extra)
     const margin = 100
     this.targets = []
-    for (let i = 0; i < n; i++) {
-      for (let attempts = 0; attempts < 30; attempts++) {
+    for (let i = 0; i < count; i++) {
+      // Distância mínima cai conforme o tabuleiro lota — senão estrelas
+      // grandes não cabem.
+      const minDist = Math.max(80, 160 - count * 6)
+      for (let attempts = 0; attempts < 50; attempts++) {
         const x = margin + Math.random() * (this.canvas.width - margin * 2)
         const y = margin + Math.random() * (this.canvas.height - margin * 2)
         let ok = true
-        for (const t of this.targets) if (Math.hypot(t.x - x, t.y - y) < 140) { ok = false; break }
+        for (const t of this.targets) if (Math.hypot(t.x - x, t.y - y) < minDist) { ok = false; break }
         if (ok) {
-          this.targets.push({ color: COLORS[i], x, y, hitBy: null })
+          this.targets.push({ x, y, hitBy: null })
           break
         }
       }
+    }
+    // Ordena por "nearest neighbour" (greedy TSP) — as linhas conectando
+    // estrelas adjacentes formam um traço de constelação reconhecível.
+    if (this.targets.length > 1) {
+      const ordered: Target[] = [this.targets[0]]
+      const remaining = this.targets.slice(1)
+      while (remaining.length) {
+        const last = ordered[ordered.length - 1]
+        let bestIdx = 0
+        let bestD = Infinity
+        for (let i = 0; i < remaining.length; i++) {
+          const d = Math.hypot(remaining[i].x - last.x, remaining[i].y - last.y)
+          if (d < bestD) { bestD = d; bestIdx = i }
+        }
+        ordered.push(remaining.splice(bestIdx, 1)[0])
+      }
+      this.targets = ordered
     }
   }
 
   private runShow() {
     const { ctx } = this
-    for (const t of this.targets) drawPlayerHalo(ctx, t.x, t.y, t.color, this.phaseElapsed, { pulsing: true })
-    // Linhas conectando todos os pontos pra criar "constelação"
+    // Traços da constelação aparecem ANTES das estrelas — guia o olhar
     for (let i = 0; i < this.targets.length - 1; i++) {
       const a = this.targets[i]
       const b = this.targets[i + 1]
       ctx.beginPath()
       ctx.moveTo(a.x, a.y)
       ctx.lineTo(b.x, b.y)
-      ctx.strokeStyle = '#ffffff44'
+      ctx.strokeStyle = '#ffffff55'
       ctx.lineWidth = 2
       ctx.setLineDash([6, 6])
+      ctx.shadowBlur = 12
+      ctx.shadowColor = '#ffffff'
       ctx.stroke()
       ctx.setLineDash([])
+      ctx.shadowBlur = 0
     }
+    for (const t of this.targets) drawPlayerHalo(ctx, t.x, t.y, STAR_COLOR, this.phaseElapsed, { pulsing: true })
     const remaining = Math.ceil(SHOW_DURATION - this.phaseElapsed)
     this.drawTopHUD(`Memorizem · ${remaining}s`, this.meta.color)
     if (this.phaseElapsed >= SHOW_DURATION) {
@@ -153,7 +183,8 @@ export class ConstelacaoGame implements GameModule {
   }
 
   private runAnswer(points: Map<number, TouchPoint>) {
-    // Marca hits: cada toque ativo verifica posição vs targets da mesma cor (por ordem)
+    // Qualquer dedo pode tocar qualquer ponto — sem padrão de cores. Cada
+    // toque "fecha" a estrela mais próxima ainda não acertada.
     const activeIds = [...points.entries()].filter(([_, pt]) => pt.active)
     for (const target of this.targets) target.hitBy = null
     for (const [id, pt] of activeIds) {
@@ -168,12 +199,26 @@ export class ConstelacaoGame implements GameModule {
     }
     this.hitsThisRound = this.targets.filter(t => t.hitBy !== null).length
 
-    // Render APENAS os pontos já reconstruídos. Os alvos não-acertados ficam
-    // invisíveis — quem joga precisa lembrar de cabeça onde tocar, sem dica.
+    // Render APENAS os pontos já reconstruídos + as linhas entre eles,
+    // revelando a constelação aos poucos.
     const { ctx } = this
+    for (let i = 0; i < this.targets.length - 1; i++) {
+      const a = this.targets[i]
+      const b = this.targets[i + 1]
+      if (a.hitBy === null || b.hitBy === null) continue
+      ctx.beginPath()
+      ctx.moveTo(a.x, a.y)
+      ctx.lineTo(b.x, b.y)
+      ctx.strokeStyle = '#ffffff88'
+      ctx.lineWidth = 2
+      ctx.shadowBlur = 16
+      ctx.shadowColor = '#ffffff'
+      ctx.stroke()
+      ctx.shadowBlur = 0
+    }
     for (const t of this.targets) {
       if (t.hitBy !== null) {
-        drawPlayerHalo(ctx, t.x, t.y, t.color, this.phaseElapsed, { pulsing: false })
+        drawPlayerHalo(ctx, t.x, t.y, STAR_COLOR, this.phaseElapsed, { pulsing: false })
       }
     }
 

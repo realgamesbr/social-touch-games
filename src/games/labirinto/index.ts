@@ -32,6 +32,15 @@ interface Hole {
   r: number
 }
 
+interface PlayerState {
+  lastX: number
+  lastY: number
+  liftTime: number
+}
+
+const LIFT_GRACE = 3.0
+const RECLAIM_RADIUS = 120  // raio em volta do último ponto pra retomar o dedo
+
 type Phase = 'checkin' | 'playing' | 'gameover'
 
 export class LabirintoGame implements GameModule {
@@ -44,6 +53,9 @@ export class LabirintoGame implements GameModule {
   phase: Phase = 'checkin'
   phaseElapsed = 0
   players: CheckinPlayer[] = []
+  // Estado paralelo aos players (mesma ordem) — não pode entrar no CheckinPlayer
+  // porque o helper de checkin é compartilhado entre todos os jogos.
+  private playerStates: PlayerState[] = []
   private ball: Ball = { x: 0, y: 0, vx: 0, vy: 0, r: 28 }
   private holes: Hole[] = []
   private gameElapsed = 0
@@ -114,7 +126,49 @@ export class LabirintoGame implements GameModule {
     const speed = 40   // começa devagar (~1/5 do ritmo antigo, era 180)
     this.ball.vx = Math.cos(angle) * speed
     this.ball.vy = Math.sin(angle) * speed
+    // Snapshot do checkin pra rastrear posição "esperada" do dedo quando ele
+    // se solta — assim o jogador retoma perto e o halo reaparece.
+    this.playerStates = this.players.map(p => ({ lastX: p.x, lastY: p.y, liftTime: 0 }))
     this.generateHoles()
+  }
+
+  // Reatribui pointerIds: se um player perdeu o dedo mas um pointer novo
+  // tocou perto da última posição dele, retoma. Retorna true se algum player
+  // estourou o cooldown LIFT_GRACE — caller deve falhar.
+  private resolvePlayerPointers(points: Map<number, TouchPoint>, dt: number): boolean {
+    const claimed = new Set<number>()
+    for (const p of this.players) if (points.get(p.pointerId)?.active) claimed.add(p.pointerId)
+    for (let i = 0; i < this.players.length; i++) {
+      const p = this.players[i]
+      const st = this.playerStates[i]
+      const pt = points.get(p.pointerId)
+      if (pt?.active) {
+        p.x = pt.x; p.y = pt.y
+        st.lastX = pt.x; st.lastY = pt.y
+        st.liftTime = 0
+        continue
+      }
+      // Sem dedo: procurar pointer livre próximo
+      let bestId: number | null = null
+      let bestD = RECLAIM_RADIUS
+      for (const [id, npt] of points) {
+        if (!npt.active || claimed.has(id)) continue
+        const d = Math.hypot(npt.x - st.lastX, npt.y - st.lastY)
+        if (d < bestD) { bestD = d; bestId = id }
+      }
+      if (bestId !== null) {
+        p.pointerId = bestId
+        const npt = points.get(bestId)!
+        p.x = npt.x; p.y = npt.y
+        st.lastX = npt.x; st.lastY = npt.y
+        st.liftTime = 0
+        claimed.add(bestId)
+      } else {
+        st.liftTime += dt
+        if (st.liftTime >= LIFT_GRACE) return true
+      }
+    }
+    return false
   }
 
   private generateHoles() {
@@ -152,6 +206,15 @@ export class LabirintoGame implements GameModule {
     this.gameElapsed += dt
     this.rotation += this.rotationSpeed * dt
     this.rotationSpeed = 0.06 + this.gameElapsed * 0.005
+
+    // Resolver dedos soltos ANTES de processar colisões — assim o jogador
+    // que voltou a tocar passa a defender de novo no mesmo frame.
+    if (this.resolvePlayerPointers(points, dt)) {
+      this.failReason = 'Soltaram um dedo por tempo demais'
+      this.phase = 'gameover'
+      this.session.end()
+      return
+    }
 
     // Move ball
     this.ball.x += this.ball.vx * dt
@@ -301,10 +364,32 @@ export class LabirintoGame implements GameModule {
 
   private drawTouches(points: Map<number, TouchPoint>) {
     const { ctx } = this
-    for (const p of this.players) {
+    for (let i = 0; i < this.players.length; i++) {
+      const p = this.players[i]
+      const st = this.playerStates[i]
       const pt = points.get(p.pointerId)
-      if (!pt?.active) continue
-      drawPlayerHalo(ctx, pt.x, pt.y, p.color, this.phaseElapsed, { pulsing: false, size: 0.85 })
+      if (pt?.active) {
+        drawPlayerHalo(ctx, pt.x, pt.y, p.color, this.phaseElapsed, { pulsing: false, size: 0.85 })
+        continue
+      }
+      // Dedo solto: marca o último ponto e mostra o cooldown restante
+      const remaining = Math.max(0, LIFT_GRACE - st.liftTime)
+      const pulse = 14 + Math.sin(this.phaseElapsed * 10) * 6
+      ctx.beginPath()
+      ctx.arc(st.lastX, st.lastY, 28 + pulse, 0, Math.PI * 2)
+      ctx.strokeStyle = p.color
+      ctx.lineWidth = 3
+      ctx.setLineDash([5, 5])
+      ctx.shadowBlur = 24
+      ctx.shadowColor = '#ff4444'
+      ctx.stroke()
+      ctx.setLineDash([])
+      ctx.shadowBlur = 0
+      ctx.fillStyle = '#ff4444'
+      ctx.font = `bold ${Math.min(this.canvas.width * 0.045, 20)}px system-ui`
+      ctx.textAlign = 'center'
+      ctx.textBaseline = 'middle'
+      ctx.fillText(remaining.toFixed(1), st.lastX, st.lastY)
     }
   }
 
