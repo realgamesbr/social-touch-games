@@ -3,6 +3,7 @@ import type { TouchPoint } from '../../core/TouchManager'
 import { SessionManager } from '../../core/SessionManager'
 import type { GameModule, GameMeta } from '../../core/GameModule'
 import { COLORS, alphaHex, segmentsIntersect, segmentIntersectionPoint } from '../../core/helpers'
+import { drawBackground } from '../../core/background'
 
 const META: GameMeta = {
   id: 'sinergia',
@@ -26,7 +27,13 @@ const ENERGY_DECAY = 1.5         // s para esvair
 const ENERGY_FREEZE = 0.25       // abaixo disto o ponto congela (desconectado)
 const COLLECTIVE_EXTRA_DECAY = 1.2
 const IGNITE_TIME = 3.0
-const AGENCY_RISE = 6.0          // s de coerência alta até agency=1
+const AGENCY_RISE = 10.0         // s de coerência alta até agency=1 (evolução lenta)
+// Ritmo do "vento" que move os pontos. flowTime avança a flowSpeed; o idle anda
+// a meia velocidade e o movimento guiado começa ainda mais lento e acelera devagar.
+const IDLE_FLOW = 0.5
+const FOLLOW_FLOW_START = 0.2
+const FOLLOW_FLOW_MAX = 0.55
+const FOLLOW_RAMP = 18.0         // s até o fluxo guiado chegar no máximo
 const UNTANGLE_ARM_AGENCY = 0.85
 const UNTANGLE_ARM_TIME = 2.0
 const UNTANGLE_STABLE = 1.5
@@ -83,6 +90,10 @@ export class SinergiaGame implements GameModule {
   private particles: Particle[] = []
   private nextId = 0
   private time = 0
+  private flowTime = 0       // tempo do "vento" que desloca os pontos
+  private flowSpeed = IDLE_FLOW
+  private followTime = 0     // tempo desde que o movimento guiado começou
+  private igniteSignal = 0   // sinal visual de "começou" (decai)
 
   private agency = 0
   private coherence = 0
@@ -111,6 +122,10 @@ export class SinergiaGame implements GameModule {
     this.particles = []
     this.nextId = 0
     this.time = 0
+    this.flowTime = 0
+    this.flowSpeed = IDLE_FLOW
+    this.followTime = 0
+    this.igniteSignal = 0
     this.agency = 0
     this.coherence = 0
     this.collectiveEbb = false
@@ -129,10 +144,12 @@ export class SinergiaGame implements GameModule {
 
   update(dt: number) {
     this.time += dt
+    this.igniteSignal = Math.max(0, this.igniteSignal - dt / 2.4)
     this.pts = this.touch.getPoints()
 
     if (!this.audio && this.hasAnyActive()) this.initAudio()
 
+    this.updateFlow(dt)
     this.updateBonds()
     this.updateEnergy(dt)
 
@@ -277,6 +294,8 @@ export class SinergiaGame implements GameModule {
     this.agency = 0
     this.igniteTimer = 0
     this.calmTimer = 0
+    this.followTime = 0      // movimento guiado recomeça bem devagar
+    this.igniteSignal = 1    // dispara o sinal "começou" na tela
   }
 
   private runFollowing(dt: number) {
@@ -334,6 +353,7 @@ export class SinergiaGame implements GameModule {
     this.fallbackTimer = 0
     this.igniteTimer = 0
     this.untangleStable = 0
+    this.followTime = 0
   }
 
   private enterUntangling() {
@@ -454,14 +474,30 @@ export class SinergiaGame implements GameModule {
   }
 
   // ─── Movimento ────────────────────────────────────────────────
+  // Avança o "vento" que move os pontos. Idle anda a meia velocidade; ao começar
+  // o movimento guiado o fluxo cai ainda mais e sobe bem devagar (compreensível).
+  private updateFlow(dt: number) {
+    let target: number
+    if (this.phase === 'gathering') {
+      target = IDLE_FLOW
+    } else {
+      this.followTime += dt
+      const ramp = Math.min(1, this.followTime / FOLLOW_RAMP)
+      target = FOLLOW_FLOW_START + (FOLLOW_FLOW_MAX - FOLLOW_FLOW_START) * ramp
+    }
+    // transição suave entre regimes (a desaceleração ao iniciar fica visível)
+    this.flowSpeed += (target - this.flowSpeed) * Math.min(1, dt * 0.8)
+    this.flowTime += this.flowSpeed * dt
+  }
+
   private willTarget(p: Point): { x: number; y: number } {
     const w = this.canvas.width, h = this.canvas.height
     const cx = w / 2, cy = h / 2
     const ax = (w / 2 - 90) * 0.85
     const ay = (h / 2 - 90) * 0.85
     return {
-      x: cx + ax * Math.sin(this.time * p.wsx + p.seedX),
-      y: cy + ay * Math.sin(this.time * p.wsy + p.seedY),
+      x: cx + ax * Math.sin(this.flowTime * p.wsx + p.seedX),
+      y: cy + ay * Math.sin(this.flowTime * p.wsy + p.seedY),
     }
   }
 
@@ -569,13 +605,19 @@ export class SinergiaGame implements GameModule {
   private render() {
     const { ctx, canvas } = this
     const cx = canvas.width / 2, cy = canvas.height / 2
-    // fundo gradiente, sutilmente mais quente com coerência
+    // Fundo galáxia (compartilhado), com brilho coletivo quente que cresce
+    // com a coerência sobreposto de forma aditiva e sutil.
+    drawBackground(ctx, canvas)
     const warm = this.coherence * (1 - this.desat)
-    const grad = ctx.createRadialGradient(cx, cy, 40, cx, cy, Math.max(canvas.width, canvas.height) / 2)
-    grad.addColorStop(0, `rgb(${Math.floor(20 + warm * 18)},${10},${Math.floor(36 + warm * 10)})`)
-    grad.addColorStop(1, '#07070d')
-    ctx.fillStyle = grad
-    ctx.fillRect(0, 0, canvas.width, canvas.height)
+    if (warm > 0.01) {
+      const grad = ctx.createRadialGradient(cx, cy, 30, cx, cy, Math.max(canvas.width, canvas.height) / 2)
+      grad.addColorStop(0, `rgba(${Math.floor(150 * warm)},${Math.floor(60 * warm)},${Math.floor(170 * warm)},${0.3 * warm})`)
+      grad.addColorStop(1, 'rgba(0,0,0,0)')
+      ctx.globalCompositeOperation = 'lighter'
+      ctx.fillStyle = grad
+      ctx.fillRect(0, 0, canvas.width, canvas.height)
+      ctx.globalCompositeOperation = 'source-over'
+    }
 
     ctx.globalCompositeOperation = 'lighter'
     this.drawTrails()
@@ -584,6 +626,63 @@ export class SinergiaGame implements GameModule {
     this.drawCrossings()
     this.drawParticles()
     ctx.globalCompositeOperation = 'source-over'
+
+    this.drawTethers()
+    this.drawIgniteSignal()
+  }
+
+  // Teia elástica entre o dedo e a bolinha quando ela se afasta — mostra
+  // "vá pra lá" até a pessoa reaproximar o dedo do ponto.
+  private drawTethers() {
+    const { ctx } = this
+    for (const p of this.points) {
+      if (p.bondPointerId === null || p.dissolving) continue
+      const tp = this.pts.get(p.bondPointerId)
+      if (!tp || !tp.active) continue
+      const d = Math.hypot(tp.x - p.x, tp.y - p.y)
+      if (d < BOND_RADIUS * 0.95) continue   // já está perto: sem teia
+
+      ctx.strokeStyle = p.color + alphaHex(0.55)
+      ctx.lineWidth = 1.5
+      ctx.shadowBlur = 10
+      ctx.shadowColor = p.color
+      for (let s = 0; s < 3; s++) {
+        const mx = (p.x + tp.x) / 2 + Math.sin(this.time * 6 + s * 2) * 9
+        const my = (p.y + tp.y) / 2 + Math.cos(this.time * 6 + s * 2) * 9
+        ctx.beginPath()
+        ctx.moveTo(p.x, p.y)
+        ctx.quadraticCurveTo(mx, my, tp.x, tp.y)
+        ctx.stroke()
+      }
+      ctx.shadowBlur = 0
+      // pulso no ponto pra indicar o destino
+      ctx.beginPath()
+      ctx.arc(p.x, p.y, 16 + Math.sin(this.time * 6) * 4, 0, Math.PI * 2)
+      ctx.strokeStyle = p.color + alphaHex(0.8)
+      ctx.lineWidth = 2
+      ctx.stroke()
+    }
+  }
+
+  private drawIgniteSignal() {
+    if (this.igniteSignal <= 0) return
+    const { ctx, canvas } = this
+    const cx = canvas.width / 2, cy = canvas.height / 2
+    const a = this.igniteSignal
+    const r = (1 - a) * Math.min(canvas.width, canvas.height) * 0.45
+    ctx.beginPath()
+    ctx.arc(cx, cy, r, 0, Math.PI * 2)
+    ctx.strokeStyle = `rgba(200,170,255,${a * 0.6})`
+    ctx.lineWidth = 3
+    ctx.stroke()
+    ctx.fillStyle = `rgba(232,214,255,${a})`
+    ctx.font = `bold ${Math.min(canvas.width * 0.06, 30)}px system-ui`
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'middle'
+    ctx.shadowBlur = 20
+    ctx.shadowColor = '#aa55ff'
+    ctx.fillText('✺ SIGAM JUNTOS', cx, cy)
+    ctx.shadowBlur = 0
   }
 
   private drawTrails() {

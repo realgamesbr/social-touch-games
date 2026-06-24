@@ -2,6 +2,7 @@ import { TouchManager } from '../../core/TouchManager'
 import type { TouchPoint } from '../../core/TouchManager'
 import { SessionManager } from '../../core/SessionManager'
 import type { GameModule, GameMeta } from '../../core/GameModule'
+import { drawBackground } from '../../core/background'
 
 const META: GameMeta = {
   id: 'raios',
@@ -15,7 +16,7 @@ const META: GameMeta = {
 }
 
 const COLORS = ['#ff4444', '#00e676', '#ffab40', '#aa55ff', '#00e5ff', '#ff44ff']
-const CHECKIN_DURATION = 10
+const CHECKIN_DURATION = 5
 const SECOND_TOUCH_TIMEOUT = 20
 const STABLE_REQUIRED = 1.5
 const ANCHOR_RADIUS = 50
@@ -97,9 +98,7 @@ export class RaiosGame implements GameModule {
   update(dt: number) {
     this.phaseElapsed += dt
     const { ctx, canvas } = this
-    ctx.fillStyle = '#0d0d0d'
-    ctx.fillRect(0, 0, canvas.width, canvas.height)
-    this.drawGrid()
+    drawBackground(ctx, canvas)
 
     const points = this.touch.getPoints()
 
@@ -349,15 +348,14 @@ export class RaiosGame implements GameModule {
   private generateEdges() {
     const n = this.players.length
     this.edges = []
-    if (this.level === 1) {
-      for (const p of this.players) {
-        this.edges.push({ from: p.a, to: p.b })
-      }
-      return
-    }
-    // Níveis 2+: shuffle dos endpoints B mantendo cores diferentes
+    // Liga cada A a um B de COR DIFERENTE (permutação), escolhendo a que MAIS
+    // cruza nas posições atuais dos dedos — inclusive no nível 1. Assim toda
+    // troca de fase muda as conexões e SEMPRE exige mover os dedos para
+    // desemaranhar (antes, nível 1 e algumas transições não pediam movimento).
+    const required = Math.max(1, Math.floor(n / 2))
     let baseEdges: Edge[] = []
-    for (let attempts = 0; attempts < 200; attempts++) {
+    let bestCross = -1
+    for (let attempts = 0; attempts < 300; attempts++) {
       const bShuffled = this.players.map(p => p.b)
       this.shuffle(bShuffled)
       const candidate: Edge[] = []
@@ -371,10 +369,9 @@ export class RaiosGame implements GameModule {
       }
       if (!allDifferent) continue
       const crossings = this.countCrossingsFor(candidate)
-      if (crossings >= Math.max(1, Math.floor(n / 2))) {
-        baseEdges = candidate
-        break
-      }
+      if (crossings > bestCross) { bestCross = crossings; baseEdges = candidate }
+      // aceita cedo de vez em quando p/ variar a topologia entre as fases
+      if (crossings >= required && Math.random() < 0.3) break
     }
     if (baseEdges.length === 0) {
       for (const p of this.players) baseEdges.push({ from: p.a, to: p.b })
@@ -400,10 +397,11 @@ export class RaiosGame implements GameModule {
     }
     for (let i = 0; i < extras; i++) tryAddRandomEdge()
 
-    // GARANTE cruzamento: se a config gerada não cruza com as posições atuais
-    // (jogadores deixaram dedos parados), força adição de arestas até cruzar
-    let safety = 8
-    while (this.countCrossingsFor(this.edges) === 0 && safety-- > 0) {
+    // GARANTE cruzamentos suficientes nas posições atuais dos dedos: se os
+    // jogadores deixaram tudo parado, força arestas até haver o mínimo exigido,
+    // obrigando reorganização física a cada fase.
+    let safety = 14
+    while (this.countCrossingsFor(this.edges) < required && safety-- > 0) {
       if (!tryAddRandomEdge()) break
     }
   }
@@ -513,18 +511,6 @@ export class RaiosGame implements GameModule {
   }
 
   // ─── DESENHO ────────────────────────────────────────────────────
-  private drawGrid() {
-    const { ctx, canvas } = this
-    ctx.strokeStyle = 'rgba(255,255,255,0.03)'
-    ctx.lineWidth = 1
-    for (let x = 0; x < canvas.width; x += 40) {
-      ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, canvas.height); ctx.stroke()
-    }
-    for (let y = 0; y < canvas.height; y += 40) {
-      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(canvas.width, y); ctx.stroke()
-    }
-  }
-
   private drawNode(node: NodeRef, pulse: boolean, isAnchor: boolean) {
     const { ctx } = this
     const t = this.phaseElapsed

@@ -3,7 +3,7 @@ import type { TouchPoint } from './TouchManager'
 // Índices 0–5 usados pelos jogos com até 6 players; 6–7 só pela Sinergia (8 players).
 // Estender é backward-safe: os demais jogos nunca passam de COLORS[5].
 export const COLORS = ['#ff4444', '#00e676', '#ffab40', '#aa55ff', '#00e5ff', '#ff44ff', '#ffd740', '#448aff']
-export const CHECKIN_DURATION = 10
+export const CHECKIN_DURATION = 5
 
 export interface CheckinPlayer {
   pointerId: number

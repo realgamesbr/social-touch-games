@@ -15,10 +15,9 @@ const META: GameMeta = {
 }
 
 const COLORS = ['#ff4444', '#00e676', '#ffab40', '#aa55ff', '#00e5ff', '#ff44ff']
-const CHECKIN_DURATION = 10
+const CHECKIN_DURATION = 5
 const WATER_RISE_RATE = 0.012   // por buraco aberto / segundo
 const POINTS_PER_PLUGGED_SECOND = 5
-const PENALTY_PER_IDLE_TOUCH_SECOND = 4   // pts/s perdidos por dedo fora de buraco
 const LIFESPAN_MIN_BASE = 5     // segundos
 const LIFESPAN_MAX_BASE = 9
 const SPAWN_INTERVAL_INITIAL = 2.2
@@ -35,6 +34,14 @@ interface Hole {
   bornAt: number
   lifespan: number
   sprayAngle: number
+}
+
+interface Hazard {
+  x: number
+  y: number
+  r: number
+  vx: number
+  vy: number
 }
 
 interface CheckinPlayer {
@@ -55,6 +62,7 @@ export class VazamentoGame implements GameModule {
   private phaseElapsed = 0
   private players: CheckinPlayer[] = []
   private holes: Hole[] = []
+  private hazards: Hazard[] = []
   private nextHoleId = 0
   private waterLevel = 0
   private gameElapsed = 0
@@ -70,6 +78,7 @@ export class VazamentoGame implements GameModule {
     this.phaseElapsed = 0
     this.players = []
     this.holes = []
+    this.hazards = []
     this.nextHoleId = 0
     this.waterLevel = 0
     this.gameElapsed = 0
@@ -144,15 +153,67 @@ export class VazamentoGame implements GameModule {
     this.spawnTimer = 0
     this.scoreAccum = 0
     this.holes = []
+    this.spawnHazards()
     // Spawn inicial escalonado: começa com 1 buraco
     this.spawnHole()
+  }
+
+  private spawnHazards() {
+    this.hazards = []
+    const count = 2 + Math.floor(this.players.length / 2)
+    const w = this.canvas.width
+    const h = this.canvas.height
+    const margin = 90
+    for (let i = 0; i < count; i++) {
+      let x = 0, y = 0, tries = 0
+      do {
+        x = margin + Math.random() * (w - margin * 2)
+        y = margin + Math.random() * (h - margin * 2)
+        tries++
+      } while (tries < 25 && this.players.some(p => Math.hypot(p.x - x, p.y - y) < 150))
+      const angle = Math.random() * Math.PI * 2
+      const speed = 35 + Math.random() * 35
+      this.hazards.push({
+        x, y,
+        r: 30 + Math.random() * 16,
+        vx: Math.cos(angle) * speed,
+        vy: Math.sin(angle) * speed,
+      })
+    }
+  }
+
+  private updateHazards(dt: number) {
+    const m = 30
+    for (const z of this.hazards) {
+      z.x += z.vx * dt
+      z.y += z.vy * dt
+      if (z.x - z.r < m) { z.x = m + z.r; z.vx = Math.abs(z.vx) }
+      if (z.x + z.r > this.canvas.width - m) { z.x = this.canvas.width - m - z.r; z.vx = -Math.abs(z.vx) }
+      if (z.y - z.r < m) { z.y = m + z.r; z.vy = Math.abs(z.vy) }
+      if (z.y + z.r > this.canvas.height - m) { z.y = this.canvas.height - m - z.r; z.vy = -Math.abs(z.vy) }
+    }
   }
 
   // ─── PLAYING ────────────────────────────────────────────────────
   private updatePlaying(points: Map<number, TouchPoint>, dt: number) {
     this.gameElapsed += dt
     this.spawnTimer += dt
+    this.updateHazards(dt)
     this.updatePlugs(points)
+
+    // Perde se um dedo passar por um obstáculo (grace inicial pra reagir).
+    if (this.gameElapsed > 0.6) {
+      for (const [, pt] of points) {
+        if (!pt.active) continue
+        for (const z of this.hazards) {
+          if (Math.hypot(pt.x - z.x, pt.y - z.y) < z.r + 16) {
+            this.phase = 'gameover'
+            this.session.end()
+            return
+          }
+        }
+      }
+    }
 
     const now = this.gameElapsed
     this.holes = this.holes.filter(h => (now - h.bornAt) < h.lifespan)
@@ -175,17 +236,12 @@ export class VazamentoGame implements GameModule {
     this.waterLevel += openHoles * dt * WATER_RISE_RATE
     this.waterLevel = Math.min(this.waterLevel, 1)
 
-    // Contagem de dedos que NÃO estão plugando buraco
+    // Dedos que estão tapando buraco (o resto está em trânsito entre buracos)
     const pluggedPointerIds = new Set(this.holes.filter(h => h.pluggedBy !== null).map(h => h.pluggedBy!))
-    let idleTouches = 0
-    for (const [id, pt] of points) {
-      if (!pt.active) continue
-      if (!pluggedPointerIds.has(id)) idleTouches++
-    }
 
-    // Score: ganha por buraco plugado, perde por dedo ocioso
-    const netDelta = pluggedHoles * POINTS_PER_PLUGGED_SECOND * dt - idleTouches * PENALTY_PER_IDLE_TOUCH_SECOND * dt
-    this.scoreAccum += netDelta
+    // Score: ganha por buraco plugado (não punimos mais o dedo em trânsito —
+    // a ideia agora é deslizar sem tirar o dedo da tela)
+    this.scoreAccum += pluggedHoles * POINTS_PER_PLUGGED_SECOND * dt
     const whole = Math.trunc(this.scoreAccum)
     if (whole !== 0) {
       this.session.addScore(whole)
@@ -194,6 +250,7 @@ export class VazamentoGame implements GameModule {
 
     this.drawFloor()
     for (const hole of this.holes) this.drawHole(hole)
+    this.drawHazards()
     this.drawIdleTouches(points, pluggedPointerIds)
     this.drawWaterFromEdges()
     this.drawHUD(openHoles)
@@ -214,7 +271,10 @@ export class VazamentoGame implements GameModule {
       x = margin + Math.random() * (w - margin * 2)
       y = margin + Math.random() * (h - margin * 2)
       attempts++
-    } while (attempts < 25 && this.holes.some(h => Math.hypot(h.x - x, h.y - y) < 100))
+    } while (attempts < 25 && (
+      this.holes.some(h => Math.hypot(h.x - x, h.y - y) < 100) ||
+      this.hazards.some(z => Math.hypot(z.x - x, z.y - y) < z.r + 55)
+    ))
     // Lifespan aleatório por buraco, reduzido com o tempo do jogo
     const lifespanScale = Math.max(0.5, 1 - this.gameElapsed * 0.008)
     const baseLifespan = LIFESPAN_MIN_BASE + Math.random() * (LIFESPAN_MAX_BASE - LIFESPAN_MIN_BASE)
@@ -370,7 +430,7 @@ export class VazamentoGame implements GameModule {
       ctx.fillText('TOQUEM E SEGUREM', cx, cy - 20)
       ctx.fillStyle = '#aac'
       ctx.font = `${Math.min(canvas.width * 0.04, 16)}px system-ui`
-      ctx.fillText('2 a 6 jogadores · cada um vai cuidar de 2 buracos', cx, cy + 20)
+      ctx.fillText('2 a 6 jogadores · deslizem sem tirar o dedo e desviem dos ⚠', cx, cy + 20)
       return
     }
     ctx.fillStyle = '#fff'
@@ -462,26 +522,52 @@ export class VazamentoGame implements GameModule {
     }
   }
 
-  private drawIdleTouches(points: Map<number, TouchPoint>, plugged: Set<number>) {
+  private drawHazards() {
     const { ctx } = this
     const t = this.gameElapsed
-    for (const [id, pt] of points) {
-      if (!pt.active || plugged.has(id)) continue
-      const pulse = 4 + Math.sin(t * 8) * 4
+    for (const z of this.hazards) {
+      const pulse = 4 + Math.sin(t * 5 + z.x) * 4
       ctx.beginPath()
-      ctx.arc(pt.x, pt.y, 38 + pulse, 0, Math.PI * 2)
+      ctx.arc(z.x, z.y, z.r + 14 + pulse, 0, Math.PI * 2)
+      ctx.fillStyle = 'rgba(255,60,60,0.10)'
+      ctx.fill()
+      ctx.beginPath()
+      ctx.arc(z.x, z.y, z.r, 0, Math.PI * 2)
+      const g = ctx.createRadialGradient(z.x, z.y, z.r * 0.2, z.x, z.y, z.r)
+      g.addColorStop(0, 'rgba(140,24,24,0.95)')
+      g.addColorStop(1, 'rgba(60,0,0,0.85)')
+      ctx.fillStyle = g
+      ctx.fill()
       ctx.strokeStyle = '#ff4444'
       ctx.lineWidth = 3
-      ctx.shadowBlur = 20
+      ctx.setLineDash([6, 6])
+      ctx.lineDashOffset = -t * 30
+      ctx.shadowBlur = 18
       ctx.shadowColor = '#ff4444'
       ctx.stroke()
+      ctx.setLineDash([])
       ctx.shadowBlur = 0
-      // X
-      ctx.fillStyle = '#ff4444'
-      ctx.font = 'bold 16px system-ui'
+      ctx.fillStyle = '#ffcc44'
+      ctx.font = `bold ${Math.round(z.r * 0.9)}px system-ui`
       ctx.textAlign = 'center'
       ctx.textBaseline = 'middle'
-      ctx.fillText('−', pt.x, pt.y)
+      ctx.fillText('⚠', z.x, z.y)
+    }
+  }
+
+  // Dedos em trânsito (deslizando entre buracos) — marcador neutro, sem punição.
+  private drawIdleTouches(points: Map<number, TouchPoint>, plugged: Set<number>) {
+    const { ctx } = this
+    for (const [id, pt] of points) {
+      if (!pt.active || plugged.has(id)) continue
+      ctx.beginPath()
+      ctx.arc(pt.x, pt.y, 24, 0, Math.PI * 2)
+      ctx.strokeStyle = 'rgba(120,200,255,0.75)'
+      ctx.lineWidth = 3
+      ctx.shadowBlur = 12
+      ctx.shadowColor = '#66ccff'
+      ctx.stroke()
+      ctx.shadowBlur = 0
     }
   }
 

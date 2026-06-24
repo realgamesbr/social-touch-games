@@ -2,6 +2,7 @@ import { TouchManager } from '../../core/TouchManager'
 import type { TouchPoint } from '../../core/TouchManager'
 import { SessionManager } from '../../core/SessionManager'
 import type { GameModule, GameMeta } from '../../core/GameModule'
+import { drawBackground } from '../../core/background'
 
 const META: GameMeta = {
   id: 'pulso',
@@ -14,7 +15,7 @@ const META: GameMeta = {
   color: '#ff4444',
 }
 
-const CHECKIN_DURATION = 10
+const CHECKIN_DURATION = 5
 const BPM = 72
 const BEAT_MS = 60000 / BPM
 const TICKS_PER_BEAT = 2
@@ -84,6 +85,7 @@ export class PulsoGame implements GameModule {
   private streak = 0
   private lastPointerIds = new Set<number>()
   private unsub: (() => void) | null = null
+  private lastBeatIdx = -1
 
   init(canvas: HTMLCanvasElement, touch: TouchManager, session: SessionManager) {
     this.canvas = canvas
@@ -103,8 +105,7 @@ export class PulsoGame implements GameModule {
 
   update(dt: number) {
     this.phaseElapsed += dt
-    this.ctx.fillStyle = '#0d0d0d'
-    this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height)
+    drawBackground(this.ctx, this.canvas)
     const points = this.touch.getPoints()
 
     switch (this.phase) {
@@ -167,6 +168,7 @@ export class PulsoGame implements GameModule {
     this.phase = 'playing'
     this.phaseElapsed = 0
     this.gameStartTime = Date.now()
+    this.lastBeatIdx = -1
     this.layoutCells()
     try { this.audio = new AudioContext() } catch (e) { console.warn(e) }
   }
@@ -215,9 +217,78 @@ export class PulsoGame implements GameModule {
       return
     }
 
+    this.updateMetronome(nowMs)
     this.drawPizzaBackground()
+    this.drawMetronome(nowMs)
     this.drawCells(nowMs)
     this.drawPlayingHUD(nowMs)
+  }
+
+  // ─── METRÔNOMO ──────────────────────────────────────────────────
+  // Luz central pisca a cada batida (downbeat mais forte) + clique sutil,
+  // pra todo mundo sentir o tempo mesmo sem conhecer a música.
+  private updateMetronome(nowMs: number) {
+    const beatIdx = Math.floor(nowMs / BEAT_MS)
+    if (beatIdx !== this.lastBeatIdx) {
+      this.lastBeatIdx = beatIdx
+      this.playTick(beatIdx % 4 === 0)
+    }
+  }
+
+  private playTick(downbeat: boolean) {
+    if (!this.audio) return
+    const ctx = this.audio
+    const t = ctx.currentTime
+    const o = ctx.createOscillator()
+    o.type = 'square'
+    o.frequency.value = downbeat ? 1600 : 1050
+    const g = ctx.createGain()
+    g.gain.setValueAtTime(downbeat ? 0.1 : 0.045, t)
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.05)
+    o.connect(g).connect(ctx.destination)
+    o.start(t); o.stop(t + 0.06)
+  }
+
+  private drawMetronome(nowMs: number) {
+    const { ctx, canvas } = this
+    const cx = canvas.width / 2
+    const cy = canvas.height / 2
+    const beatIdx = Math.floor(nowMs / BEAT_MS)
+    const phase = (nowMs % BEAT_MS) / BEAT_MS       // 0 no início da batida
+    const flash = Math.pow(1 - phase, 2)            // decai ao longo da batida
+    const downbeat = beatIdx % 4 === 0
+    const baseR = Math.min(canvas.width, canvas.height) * 0.045
+    const r = baseR * (0.7 + flash * (downbeat ? 0.95 : 0.55))
+    const color = downbeat ? '#ff4444' : '#ffffff'
+
+    // halo externo
+    ctx.beginPath()
+    ctx.arc(cx, cy, r * 2.3, 0, Math.PI * 2)
+    ctx.fillStyle = color + this.alphaHex(0.05 + flash * 0.16)
+    ctx.fill()
+    // núcleo brilhante
+    ctx.beginPath()
+    ctx.arc(cx, cy, r, 0, Math.PI * 2)
+    ctx.fillStyle = color + this.alphaHex(0.22 + flash * 0.6)
+    ctx.shadowBlur = 18 + flash * 40
+    ctx.shadowColor = color
+    ctx.fill()
+    ctx.shadowBlur = 0
+
+    // 4 pontinhos marcando as batidas da barra (o aceso indica a batida atual)
+    const beatInBar = beatIdx % 4
+    const dotR = baseR * 0.18
+    const ring = baseR * 1.7
+    for (let i = 0; i < 4; i++) {
+      const a = -Math.PI / 2 + (i / 4) * Math.PI * 2
+      const dx = cx + Math.cos(a) * ring
+      const dy = cy + Math.sin(a) * ring
+      const on = i === beatInBar
+      ctx.beginPath()
+      ctx.arc(dx, dy, dotR, 0, Math.PI * 2)
+      ctx.fillStyle = on ? '#ffffff' + this.alphaHex(0.4 + flash * 0.5) : '#ffffff22'
+      ctx.fill()
+    }
   }
 
   // ─── DETECÇÃO DE TOQUES ─────────────────────────────────────────

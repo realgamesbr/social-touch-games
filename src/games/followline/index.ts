@@ -134,18 +134,31 @@ export class FollowLineGame implements GameModule {
       ;[endYs[i], endYs[j]] = [endYs[j], endYs[i]]
     }
 
+    // Complexidade cresce com o nível: mais waypoints = mais curvas/voltas.
+    const waypointCount = 2 + this.level
+    const amp = (h / 2 - margin) * Math.min(1, 0.45 + this.level * 0.14)
+
     this.paths = []
     for (let i = 0; i < n; i++) {
       const startX = margin
       const startY = startYs[i]
       const endX = w - margin
       const endY = endYs[i]
-      // Pontos de controle Bezier (com offset baseado no level)
-      const ctrl1X = startX + (endX - startX) * 0.33
-      const ctrl1Y = startY + (Math.random() - 0.5) * 200 * (1 + this.level * 0.2)
-      const ctrl2X = startX + (endX - startX) * 0.66
-      const ctrl2Y = endY + (Math.random() - 0.5) * 200 * (1 + this.level * 0.2)
-      const poly = this.bezierPolyline(startX, startY, ctrl1X, ctrl1Y, ctrl2X, ctrl2Y, endX, endY, 80)
+      // Waypoints com X sempre crescente (caminho progride) e Y oscilando forte.
+      const wps: { x: number; y: number }[] = [{ x: startX, y: startY }]
+      let prevSign = Math.random() < 0.5 ? 1 : -1
+      for (let k = 1; k <= waypointCount; k++) {
+        const tx = k / (waypointCount + 1)
+        const x = startX + (endX - startX) * tx + (Math.random() - 0.5) * 50
+        const baseY = startY + (endY - startY) * tx
+        // alterna o lado da oscilação pra criar zigue-zagues / Ss reais
+        prevSign = -prevSign
+        const off = prevSign * amp * (0.5 + Math.random() * 0.5)
+        const y = Math.max(margin, Math.min(h - margin, baseY + off))
+        wps.push({ x, y })
+      }
+      wps.push({ x: endX, y: endY })
+      const poly = this.catmullRom(wps, 20)
       this.paths.push({
         playerIdx: i,
         color: COLORS[i],
@@ -158,19 +171,30 @@ export class FollowLineGame implements GameModule {
     }
   }
 
-  private bezierPolyline(
-    x0: number, y0: number, x1: number, y1: number,
-    x2: number, y2: number, x3: number, y3: number,
-    segments: number
-  ): { x: number; y: number }[] {
+  // Spline Catmull-Rom suave passando por todos os waypoints → curvas
+  // orgânicas e complexas (muito além das 2 beziers quase iguais de antes).
+  private catmullRom(pts: { x: number; y: number }[], segPer: number): { x: number; y: number }[] {
+    if (pts.length < 2) return pts.slice()
     const out: { x: number; y: number }[] = []
-    for (let i = 0; i <= segments; i++) {
-      const t = i / segments
-      const mt = 1 - t
-      const x = mt * mt * mt * x0 + 3 * mt * mt * t * x1 + 3 * mt * t * t * x2 + t * t * t * x3
-      const y = mt * mt * mt * y0 + 3 * mt * mt * t * y1 + 3 * mt * t * t * y2 + t * t * t * y3
-      out.push({ x, y })
+    for (let i = 0; i < pts.length - 1; i++) {
+      const p0 = pts[i - 1] ?? pts[i]
+      const p1 = pts[i]
+      const p2 = pts[i + 1]
+      const p3 = pts[i + 2] ?? pts[i + 1]
+      for (let s = 0; s < segPer; s++) {
+        const t = s / segPer
+        const t2 = t * t
+        const t3 = t2 * t
+        const x = 0.5 * ((2 * p1.x) + (-p0.x + p2.x) * t +
+          (2 * p0.x - 5 * p1.x + 4 * p2.x - p3.x) * t2 +
+          (-p0.x + 3 * p1.x - 3 * p2.x + p3.x) * t3)
+        const y = 0.5 * ((2 * p1.y) + (-p0.y + p2.y) * t +
+          (2 * p0.y - 5 * p1.y + 4 * p2.y - p3.y) * t2 +
+          (-p0.y + 3 * p1.y - 3 * p2.y + p3.y) * t3)
+        out.push({ x, y })
+      }
     }
+    out.push(pts[pts.length - 1])
     return out
   }
 

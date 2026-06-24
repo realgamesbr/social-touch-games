@@ -2,8 +2,9 @@ import { TouchManager } from '../../core/TouchManager'
 import type { TouchPoint } from '../../core/TouchManager'
 import { SessionManager } from '../../core/SessionManager'
 import type { GameModule, GameMeta } from '../../core/GameModule'
-import { COLORS, updateCheckin, drawPlayerHalo, drawCheckinHUD, drawEndScreen, drawGrid } from '../../core/helpers'
+import { COLORS, updateCheckin, drawPlayerHalo, drawCheckinHUD, drawEndScreen } from '../../core/helpers'
 import type { CheckinPlayer } from '../../core/helpers'
+import { drawBackground } from '../../core/background'
 
 const META: GameMeta = {
   id: 'constelacao',
@@ -61,9 +62,7 @@ export class ConstelacaoGame implements GameModule {
   update(dt: number) {
     this.phaseElapsed += dt
     const { ctx, canvas } = this
-    ctx.fillStyle = '#0d0d0d'
-    ctx.fillRect(0, 0, canvas.width, canvas.height)
-    drawGrid(ctx, canvas)
+    drawBackground(ctx, canvas)
     const points = this.touch.getPoints()
 
     switch (this.phase) {
@@ -169,18 +168,11 @@ export class ConstelacaoGame implements GameModule {
     }
     this.hitsThisRound = this.targets.filter(t => t.hitBy !== null).length
 
-    // Render alvos como "ghost" e marca os acertados
+    // Render APENAS os pontos já reconstruídos. Os alvos não-acertados ficam
+    // invisíveis — quem joga precisa lembrar de cabeça onde tocar, sem dica.
     const { ctx } = this
     for (const t of this.targets) {
-      const hit = t.hitBy !== null
-      ctx.beginPath()
-      ctx.arc(t.x, t.y, 30, 0, Math.PI * 2)
-      ctx.strokeStyle = hit ? t.color : '#ffffff22'
-      ctx.lineWidth = 2
-      ctx.setLineDash([4, 4])
-      ctx.stroke()
-      ctx.setLineDash([])
-      if (hit) {
+      if (t.hitBy !== null) {
         drawPlayerHalo(ctx, t.x, t.y, t.color, this.phaseElapsed, { pulsing: false })
       }
     }

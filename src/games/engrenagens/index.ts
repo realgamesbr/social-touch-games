@@ -4,6 +4,7 @@ import { SessionManager } from '../../core/SessionManager'
 import type { GameModule, GameMeta } from '../../core/GameModule'
 import { COLORS, updateCheckin, drawPlayerHalo, drawCheckinHUD, drawEndScreen, alphaHex } from '../../core/helpers'
 import type { CheckinPlayer } from '../../core/helpers'
+import { drawBackground } from '../../core/background'
 
 const META: GameMeta = {
   id: 'engrenagens',
@@ -17,10 +18,13 @@ const META: GameMeta = {
 }
 
 const GAME_DURATION = 60
-const TARGET_ANGULAR_SPEED = Math.PI * 2 / 3   // 1 volta a cada 3s
-const SPEED_TOLERANCE = 1.4                    // rad/s tolerância
+const BASE_TANGENTIAL = 175    // velocidade tangencial alvo (px/s) — compartilhada
+const SPEED_TOLERANCE = 1.6    // rad/s tolerância (maior pois cada raio pede uma velocidade)
 const DIRECTION_TOLERANCE = 0.3
 const TOUCH_RADIUS = 80
+const SIZE_INTERVAL = 5        // engrenagens trocam de tamanho a cada 5s
+const SIZE_MULTS = [0.55, 0.72, 0.9, 1.1, 1.3, 1.5]  // tamanhos distintos
+const GEAR_GAP = 26
 
 type Phase = 'checkin' | 'playing' | 'gameover'
 
@@ -30,6 +34,7 @@ interface Gear {
   cx: number
   cy: number
   r: number
+  targetR: number       // raio-alvo (animado a cada troca de tamanho)
   direction: 1 | -1     // CW (+1) ou CCW (-1)
   lastAngle: number
   measuredSpeed: number
@@ -50,6 +55,8 @@ export class EngrenagensGame implements GameModule {
   private gears: Gear[] = []
   private gameElapsed = 0
   private scoreAccum = 0
+  private baseR = 60
+  private sizeTimer = 0
 
   init(canvas: HTMLCanvasElement, touch: TouchManager, session: SessionManager) {
     this.canvas = canvas
@@ -69,8 +76,7 @@ export class EngrenagensGame implements GameModule {
   update(dt: number) {
     this.phaseElapsed += dt
     const { ctx, canvas } = this
-    ctx.fillStyle = '#16100a'
-    ctx.fillRect(0, 0, canvas.width, canvas.height)
+    drawBackground(ctx, canvas, '#ffab40')
     const points = this.touch.getPoints()
     switch (this.phase) {
       case 'checkin': this.runCheckin(points); break
@@ -105,27 +111,72 @@ export class EngrenagensGame implements GameModule {
     this.phase = 'playing'
     this.phaseElapsed = 0
     this.gameElapsed = 0
+    this.sizeTimer = 0
     const n = this.players.length
     const w = this.canvas.width
     const h = this.canvas.height
-    const gearR = Math.min(w / (n + 1), h / 2, 100)
-    const totalWidth = n * gearR * 2.4
-    const startX = (w - totalWidth) / 2 + gearR
-    const cy = h / 2
+
+    // Multiplicadores distintos (uma permutação) → tamanhos diferentes.
+    // Como é permutação, a soma é constante e a fileira sempre cabe na tela.
+    const mults = SIZE_MULTS.slice(0, n)
+    const sumMult = mults.reduce((s, m) => s + m, 0)
+    // raio-base de modo que a fileira (com folgas) caiba na largura e na altura
+    const availW = w - 40 - GEAR_GAP * (n - 1)
+    this.baseR = Math.max(20, Math.min(availW / (2 * sumMult), h / 2.6, 95))
+
+    this.shuffleArray(mults)
     this.gears = []
     for (let i = 0; i < n; i++) {
+      const r = this.baseR * mults[i]
       this.gears.push({
         playerIdx: i,
         color: COLORS[i],
-        cx: startX + i * gearR * 2.4,
-        cy,
-        r: gearR,
+        cx: 0,
+        cy: h / 2,
+        r,
+        targetR: r,
         direction: i % 2 === 0 ? 1 : -1,
         lastAngle: 0,
         measuredSpeed: 0,
         inSyncTime: 0,
         pointerId: null,
       })
+    }
+    this.layoutGears()
+  }
+
+  // Velocidade angular alvo de cada engrenagem: menor gira mais rápido
+  // (mesma velocidade tangencial → razão de marcha real).
+  private targetSpeedFor(g: Gear): number {
+    return (BASE_TANGENTIAL / g.r) * g.direction
+  }
+
+  private shuffleArray<T>(arr: T[]) {
+    for (let i = arr.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1))
+      ;[arr[i], arr[j]] = [arr[j], arr[i]]
+    }
+  }
+
+  // Reembaralha os tamanhos entre as engrenagens (permutação → soma constante).
+  private shuffleSizes() {
+    const mults = this.gears.map(g => g.targetR / this.baseR)
+    this.shuffleArray(mults)
+    this.gears.forEach((g, i) => { g.targetR = this.baseR * mults[i] })
+  }
+
+  // Posiciona a fileira centralizada a partir dos raios atuais.
+  private layoutGears() {
+    const n = this.gears.length
+    if (!n) return
+    let totalW = GEAR_GAP * (n - 1)
+    for (const g of this.gears) totalW += g.r * 2
+    let x = (this.canvas.width - totalW) / 2
+    const cy = this.canvas.height / 2
+    for (const g of this.gears) {
+      g.cx = x + g.r
+      g.cy = cy
+      x += g.r * 2 + GEAR_GAP
     }
   }
 
@@ -136,6 +187,15 @@ export class EngrenagensGame implements GameModule {
       this.session.end()
       return
     }
+
+    // Troca de tamanhos a cada 5s + animação suave dos raios
+    this.sizeTimer += dt
+    if (this.sizeTimer >= SIZE_INTERVAL) {
+      this.sizeTimer -= SIZE_INTERVAL
+      this.shuffleSizes()
+    }
+    for (const g of this.gears) g.r += (g.targetR - g.r) * Math.min(1, dt * 4)
+    this.layoutGears()
 
     // Associa pointers a engrenagens (1 dedo por engrenagem)
     const usedIds = new Set<number>()
@@ -176,8 +236,8 @@ export class EngrenagensGame implements GameModule {
           g.measuredSpeed = g.measuredSpeed * 0.7 + (delta / Math.max(dt, 0.001)) * 0.3
           g.lastAngle = angle
 
-          // Calcula erro vs alvo
-          const targetSpeed = TARGET_ANGULAR_SPEED * g.direction
+          // Calcula erro vs alvo (alvo depende do tamanho atual da engrenagem)
+          const targetSpeed = this.targetSpeedFor(g)
           const speedErr = Math.abs(g.measuredSpeed - targetSpeed)
           // direção certa
           const dirOk = Math.sign(g.measuredSpeed) === g.direction || Math.abs(g.measuredSpeed) < DIRECTION_TOLERANCE
@@ -208,7 +268,7 @@ export class EngrenagensGame implements GameModule {
       const teeth = 12
       const innerR = g.r * 0.7
       const outerR = g.r
-      const targetSpeed = TARGET_ANGULAR_SPEED * g.direction
+      const targetSpeed = this.targetSpeedFor(g)
       const speedErr = Math.abs(g.measuredSpeed - targetSpeed)
       const dirOk = Math.sign(g.measuredSpeed) === g.direction || Math.abs(g.measuredSpeed) < DIRECTION_TOLERANCE
       const inSync = speedErr < SPEED_TOLERANCE && dirOk && Math.abs(g.measuredSpeed) > 0.6

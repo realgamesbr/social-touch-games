@@ -4,20 +4,21 @@ import { SessionManager } from '../../core/SessionManager'
 import type { GameModule, GameMeta } from '../../core/GameModule'
 import { updateCheckin, drawPlayerHalo, drawCheckinHUD, drawEndScreen } from '../../core/helpers'
 import type { CheckinPlayer } from '../../core/helpers'
+import { drawBackground } from '../../core/background'
 
 const META: GameMeta = {
   id: 'corrente',
   title: 'Corrente',
   emoji: '🔗',
   tagline: 'Formem uma cadeia entre os pólos. Se desconecta, fim.',
-  minPlayers: 3,
+  minPlayers: 2,
   maxPlayers: 6,
   duration: 0,
   color: '#00e5ff',
 }
 
-const GAME_DURATION = 90
-const LINK_MAX_DIST = 220
+const TOTAL_PHASES = 5
+const PHASE_TIME = 12   // segundos conectados para completar cada fase
 
 type Phase = 'checkin' | 'playing' | 'gameover'
 
@@ -46,6 +47,10 @@ export class CorrenteGame implements GameModule {
   private failReason = ''
   private poleA = { x: 0, y: 0 }
   private poleB = { x: 0, y: 0 }
+  private level = 1
+  private phaseProgress = 0   // segundos conectados na fase atual
+  private levelFlash = 0
+  private won = false
 
   init(canvas: HTMLCanvasElement, touch: TouchManager, session: SessionManager) {
     this.canvas = canvas
@@ -66,13 +71,12 @@ export class CorrenteGame implements GameModule {
   update(dt: number) {
     this.phaseElapsed += dt
     const { ctx, canvas } = this
-    ctx.fillStyle = '#0a1428'
-    ctx.fillRect(0, 0, canvas.width, canvas.height)
+    drawBackground(ctx, canvas, '#00e5ff')
     const points = this.touch.getPoints()
     switch (this.phase) {
       case 'checkin': this.runCheckin(points); break
       case 'playing': this.runPlaying(points, dt); break
-      case 'gameover': drawEndScreen(ctx, canvas, false, 'CIRCUITO ABERTO', this.failReason); break
+      case 'gameover': drawEndScreen(ctx, canvas, this.won, this.won ? 'CIRCUITO COMPLETO' : 'CIRCUITO ABERTO', this.failReason); break
     }
   }
 
@@ -96,7 +100,7 @@ export class CorrenteGame implements GameModule {
     this.drawPole(this.poleB, '#ffab40')
     drawCheckinHUD(this.ctx, this.canvas, this, this.meta.minPlayers, this.meta.maxPlayers,
       r.remaining, r.canStart, this.meta.color,
-      '3 a 6 jogadores · cadeia humana de energia',
+      '2 a 6 jogadores · cadeia humana de energia',
       'formem uma linha entre as bolinhas verde e laranja')
   }
 
@@ -106,8 +110,33 @@ export class CorrenteGame implements GameModule {
     this.gameElapsed = 0
     this.scoreAccum = 0
     this.connectedTime = 0
+    this.level = 1
+    this.phaseProgress = 0
+    this.levelFlash = 0
+    this.won = false
     this.obstacles = []
     this.spawnObstacles()
+  }
+
+  // Distância máxima de cada elo, adaptada ao vão entre os pólos e ao nº de
+  // jogadores — garante que 2+ pessoas sempre consigam fechar a corrente,
+  // mas ainda exige formar uma linha razoavelmente esticada.
+  private linkMax(): number {
+    const span = this.poleB.x - this.poleA.x
+    const gaps = this.players.length + 1
+    return Math.max(200, (span / gaps) * 1.35)
+  }
+
+  private addObstacle() {
+    const x = 200 + Math.random() * (this.canvas.width - 400)
+    const y = 100 + Math.random() * (this.canvas.height - 200)
+    const angle = Math.random() * Math.PI * 2
+    const speed = 45 + Math.random() * 40 + this.level * 6
+    this.obstacles.push({
+      x, y, r: 30 + Math.random() * 20,
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed,
+    })
   }
 
   private spawnObstacles() {
@@ -127,12 +156,7 @@ export class CorrenteGame implements GameModule {
 
   private runPlaying(points: Map<number, TouchPoint>, dt: number) {
     this.gameElapsed += dt
-    if (this.gameElapsed >= GAME_DURATION) {
-      this.phase = 'gameover'
-      this.failReason = `Sobreviveram ${GAME_DURATION}s!`
-      this.session.end()
-      return
-    }
+    this.levelFlash = Math.max(0, this.levelFlash - dt * 1.5)
 
     // Atualiza obstáculos
     for (const ob of this.obstacles) {
@@ -174,10 +198,11 @@ export class CorrenteGame implements GameModule {
     activeTouches.sort((a, b) => a.x - b.x)
 
     // Verifica se a cadeia conecta os pólos
+    const linkMax = this.linkMax()
     const chain = [this.poleA, ...activeTouches, this.poleB]
     let connected = true
     for (let i = 0; i < chain.length - 1; i++) {
-      if (Math.hypot(chain[i].x - chain[i + 1].x, chain[i].y - chain[i + 1].y) > LINK_MAX_DIST) {
+      if (Math.hypot(chain[i].x - chain[i + 1].x, chain[i].y - chain[i + 1].y) > linkMax) {
         connected = false
         break
       }
@@ -185,16 +210,33 @@ export class CorrenteGame implements GameModule {
 
     if (connected) {
       this.connectedTime += dt
-      this.scoreAccum += 15 * dt
+      this.phaseProgress += dt
+      this.scoreAccum += (10 + this.level * 4) * dt
       const whole = Math.floor(this.scoreAccum)
       if (whole > 0) { this.session.addScore(whole); this.scoreAccum -= whole }
+
+      // Completou a fase?
+      if (this.phaseProgress >= PHASE_TIME) {
+        this.level++
+        this.phaseProgress = 0
+        this.levelFlash = 1
+        if (this.level > TOTAL_PHASES) {
+          this.won = true
+          this.failReason = `Completaram as ${TOTAL_PHASES} fases!`
+          this.phase = 'gameover'
+          this.session.end()
+          return
+        }
+        this.addObstacle()   // cada fase sobe a dificuldade
+      }
     }
 
     this.drawObstacles()
     this.drawPole(this.poleA, '#00e676')
     this.drawPole(this.poleB, '#ffab40')
-    this.drawChain(chain, connected, activeTouches)
+    this.drawChain(chain, connected, activeTouches, linkMax)
     this.drawPlayingHUD(connected)
+    this.drawLevelFlash()
   }
 
   private drawObstacles() {
@@ -232,14 +274,14 @@ export class CorrenteGame implements GameModule {
     ctx.shadowBlur = 0
   }
 
-  private drawChain(chain: { x: number; y: number }[], connected: boolean, activeTouches: any[]) {
+  private drawChain(chain: { x: number; y: number }[], connected: boolean, activeTouches: any[], linkMax: number) {
     const { ctx } = this
     // Linhas conectando
     for (let i = 0; i < chain.length - 1; i++) {
       const a = chain[i]
       const b = chain[i + 1]
       const d = Math.hypot(a.x - b.x, a.y - b.y)
-      const broken = d > LINK_MAX_DIST
+      const broken = d > linkMax
       ctx.beginPath()
       ctx.moveTo(a.x, a.y)
       ctx.lineTo(b.x, b.y)
@@ -260,15 +302,41 @@ export class CorrenteGame implements GameModule {
 
   private drawPlayingHUD(connected: boolean) {
     const { ctx, canvas } = this
-    const remaining = Math.ceil(GAME_DURATION - this.gameElapsed)
+    const cx = canvas.width / 2
     ctx.fillStyle = '#fff'
     ctx.font = `bold ${Math.min(canvas.width * 0.05, 22)}px system-ui`
     ctx.textAlign = 'center'
     ctx.textBaseline = 'top'
-    ctx.fillText(`${remaining}s`, canvas.width / 2, 16)
+    ctx.fillText(`FASE ${this.level}/${TOTAL_PHASES}`, cx, 14)
+
+    // Barra de progresso da fase atual (só enche enquanto conectados)
+    const barW = Math.min(canvas.width * 0.5, 320)
+    const barX = cx - barW / 2
+    ctx.fillStyle = 'rgba(0,229,255,0.18)'
+    ctx.fillRect(barX, 42, barW, 6)
+    ctx.fillStyle = '#00e5ff'
+    ctx.fillRect(barX, 42, barW * (this.phaseProgress / PHASE_TIME), 6)
+
     ctx.fillStyle = connected ? '#00e5ff' : '#ff4444'
     ctx.font = `bold ${Math.min(canvas.width * 0.04, 16)}px system-ui`
-    ctx.fillText(connected ? '⚡ energia fluindo' : 'circuito aberto', canvas.width / 2, 44)
+    ctx.fillText(connected ? '⚡ segurem a corrente para completar a fase' : 'circuito aberto — reconectem', cx, 56)
+  }
+
+  private drawLevelFlash() {
+    if (this.levelFlash <= 0) return
+    const { ctx, canvas } = this
+    const cx = canvas.width / 2
+    const cy = canvas.height / 2
+    ctx.fillStyle = `rgba(0,229,255,${this.levelFlash * 0.12})`
+    ctx.fillRect(0, 0, canvas.width, canvas.height)
+    ctx.fillStyle = `rgba(0,229,255,${this.levelFlash})`
+    ctx.font = `bold ${Math.min(canvas.width * 0.13, 60)}px system-ui`
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'middle'
+    ctx.shadowBlur = 36
+    ctx.shadowColor = '#00e5ff'
+    ctx.fillText(`FASE ${this.level}`, cx, cy)
+    ctx.shadowBlur = 0
   }
 }
 

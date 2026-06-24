@@ -4,6 +4,7 @@ import { SessionManager } from '../../core/SessionManager'
 import type { GameModule, GameMeta } from '../../core/GameModule'
 import { updateCheckin, drawPlayerHalo, drawCheckinHUD, drawEndScreen } from '../../core/helpers'
 import type { CheckinPlayer } from '../../core/helpers'
+import { drawBackground } from '../../core/background'
 
 const META: GameMeta = {
   id: 'labirinto',
@@ -25,9 +26,9 @@ interface Ball {
 }
 
 interface Hole {
-  // Em coordenadas locais (relativas ao centro, antes da rotação)
-  lx: number
-  ly: number
+  // Posição como ângulo + fração do raio da arena (acompanha o encolhimento)
+  ang: number
+  frac: number
   r: number
 }
 
@@ -47,7 +48,7 @@ export class LabirintoGame implements GameModule {
   private holes: Hole[] = []
   private gameElapsed = 0
   private rotation = 0
-  private rotationSpeed = 0.15
+  private rotationSpeed = 0.06
   private scoreAccum = 0
   private failReason = ''
 
@@ -71,8 +72,7 @@ export class LabirintoGame implements GameModule {
   update(dt: number) {
     this.phaseElapsed += dt
     const { ctx, canvas } = this
-    ctx.fillStyle = '#0d0a14'
-    ctx.fillRect(0, 0, canvas.width, canvas.height)
+    drawBackground(ctx, canvas, '#ff44ff')
     const points = this.touch.getPoints()
     switch (this.phase) {
       case 'checkin': this.runCheckin(points); break
@@ -107,10 +107,11 @@ export class LabirintoGame implements GameModule {
     this.phaseElapsed = 0
     this.gameElapsed = 0
     this.rotation = 0
+    this.rotationSpeed = 0.06
     this.ball.x = this.canvas.width / 2
     this.ball.y = this.canvas.height / 2
     const angle = Math.random() * Math.PI * 2
-    const speed = 180
+    const speed = 40   // começa devagar (~1/5 do ritmo antigo, era 180)
     this.ball.vx = Math.cos(angle) * speed
     this.ball.vy = Math.sin(angle) * speed
     this.generateHoles()
@@ -122,39 +123,44 @@ export class LabirintoGame implements GameModule {
     const count = 3 + this.players.length
     for (let i = 0; i < count; i++) {
       for (let attempts = 0; attempts < 20; attempts++) {
-        const a = Math.random() * Math.PI * 2
-        const dist = arenaR * (0.3 + Math.random() * 0.55)
-        const lx = Math.cos(a) * dist
-        const ly = Math.sin(a) * dist
+        const ang = Math.random() * Math.PI * 2
+        const frac = 0.3 + Math.random() * 0.55
+        const lx = Math.cos(ang) * frac * arenaR
+        const ly = Math.sin(ang) * frac * arenaR
         let ok = true
         for (const h of this.holes) {
-          if (Math.hypot(h.lx - lx, h.ly - ly) < 80) { ok = false; break }
+          const hlx = Math.cos(h.ang) * h.frac * arenaR
+          const hly = Math.sin(h.ang) * h.frac * arenaR
+          if (Math.hypot(hlx - lx, hly - ly) < 80) { ok = false; break }
         }
-        if (Math.hypot(lx, ly) < 60) ok = false // não no centro
         if (ok) {
-          this.holes.push({ lx, ly, r: 26 + Math.random() * 12 })
+          this.holes.push({ ang, frac, r: 26 + Math.random() * 12 })
           break
         }
       }
     }
   }
 
+  // Arena começa no tamanho máximo da tela e encolhe devagar com o tempo.
   private arenaRadius() {
-    return Math.min(this.canvas.width, this.canvas.height) / 2 - 30
+    const max = Math.min(this.canvas.width, this.canvas.height) / 2 - 16
+    const shrink = Math.min(0.42, this.gameElapsed * 0.005)
+    return max * (1 - shrink)
   }
 
   private runPlaying(points: Map<number, TouchPoint>, dt: number) {
     this.gameElapsed += dt
     this.rotation += this.rotationSpeed * dt
-    this.rotationSpeed = 0.15 + this.gameElapsed * 0.008
+    this.rotationSpeed = 0.06 + this.gameElapsed * 0.005
 
     // Move ball
     this.ball.x += this.ball.vx * dt
     this.ball.y += this.ball.vy * dt
-    // Acelera levemente com tempo
-    const accel = 1 + this.gameElapsed * 0.003
-    this.ball.vx *= accel
-    this.ball.vy *= accel
+    // Velocidade-alvo cresce devagar: começa lenta e acelera suave
+    const targetSpeed = 40 + this.gameElapsed * 4
+    const sp = Math.hypot(this.ball.vx, this.ball.vy) || 1
+    this.ball.vx = (this.ball.vx / sp) * targetSpeed
+    this.ball.vy = (this.ball.vy / sp) * targetSpeed
 
     // Colisão com bordas da arena (círculo)
     const cx = this.canvas.width / 2
@@ -198,12 +204,14 @@ export class LabirintoGame implements GameModule {
       }
     }
 
-    // Colisão com buracos (rotacionados)
+    // Colisão com buracos (rotacionados, acompanhando a arena que encolhe)
     for (const hole of this.holes) {
+      const lx = Math.cos(hole.ang) * hole.frac * arenaR
+      const ly = Math.sin(hole.ang) * hole.frac * arenaR
       const c = Math.cos(this.rotation)
       const s = Math.sin(this.rotation)
-      const hx = cx + hole.lx * c - hole.ly * s
-      const hy = cy + hole.lx * s + hole.ly * c
+      const hx = cx + lx * c - ly * s
+      const hy = cy + lx * s + ly * c
       if (Math.hypot(this.ball.x - hx, this.ball.y - hy) < hole.r + this.ball.r * 0.5) {
         this.failReason = `Sobreviveram ${this.gameElapsed.toFixed(1)}s`
         this.phase = 'gameover'
@@ -256,11 +264,14 @@ export class LabirintoGame implements GameModule {
 
   private drawHoles(cx: number, cy: number) {
     const { ctx } = this
+    const arenaR = this.arenaRadius()
     const c = Math.cos(this.rotation)
     const s = Math.sin(this.rotation)
     for (const hole of this.holes) {
-      const hx = cx + hole.lx * c - hole.ly * s
-      const hy = cy + hole.lx * s + hole.ly * c
+      const lx = Math.cos(hole.ang) * hole.frac * arenaR
+      const ly = Math.sin(hole.ang) * hole.frac * arenaR
+      const hx = cx + lx * c - ly * s
+      const hy = cy + lx * s + ly * c
       ctx.beginPath()
       ctx.arc(hx, hy, hole.r, 0, Math.PI * 2)
       ctx.fillStyle = '#000'
